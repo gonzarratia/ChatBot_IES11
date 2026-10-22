@@ -1,0 +1,15 @@
+# Entorno virtual y caché de Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Credenciales y variables de entorno (NUNCA SUBIR)
+.env
+credentials.json
+*.json
+.streamlit/secrets.toml
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db

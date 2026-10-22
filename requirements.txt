@@ -1,0 +1,15 @@
+# Interfaz web y componentes de chat (st.chat_message / st.chat_input requieren >= 1.24)
+streamlit>=1.42.0,<2.0
+ 
+# Cliente de Google Sheets (cuenta de servicio)
+gspread>=6.0,<7.0
+ 
+# Procesa el logo (reducción para incrustarlo en la cabecera); Streamlit ya lo instala
+pillow>=9.0
+ 
+# Autenticación de Google (gspread ya la instala; se declara por claridad)
+google-auth>=2.20
+ 
+# IA (opcional): SDK oficial ACTUAL de Gemini. El anterior `google-generativeai` está discontinuado.
+# Si no está instalado o no hay GEMINI_API_KEY, la app funciona igual, sin IA.
+google-genai>=1.0

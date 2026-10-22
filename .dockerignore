@@ -1,0 +1,12 @@
+# Nada de esto debe entrar en la imagen (las credenciales se montan como volumen).
+.env
+credentials.json
+.streamlit/secrets.toml
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+tests
+*.md
+*.xlsx

@@ -1,0 +1,23 @@
+services:
+  chatbot-ies:
+    build: .
+    container_name: chatbot-ies
+    ports:
+      - "8501:8501"            # host:contenedor (puerto por defecto de Streamlit)
+    environment:
+      # SHEET_ID se toma del archivo .env (ver README_INSTRUCCIONES.md).
+      # Si no está definido, compose aborta con este mensaje.
+      SHEET_ID: ${SHEET_ID:?Definí SHEET_ID en el archivo .env}
+      DEBUG: ${DEBUG:-0}       # 1 = muestra errores técnicos y botón de refresco
+      GCP_CREDENTIALS_FILE: /app/credentials.json
+      # IA (opcional). Si GEMINI_API_KEY queda vacía, el bot funciona sin IA.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}                 # vacío = lista por defecto (con failover)
+      LLM_RPM: ${LLM_RPM:-}                           # consultas/min de toda la app (def. 4)
+      LLM_RPD: ${LLM_RPD:-}                           # consultas/día de toda la app (def. 200)
+      LLM_MAX_POR_SESION: ${LLM_MAX_POR_SESION:-}     # por alumno (def. 10)
+    volumes:
+      # La clave de Google NUNCA se copia dentro de la imagen: se monta en solo lectura.
+      - ./credentials.json:/app/credentials.json:ro
+    restart: unless-stopped
+ 

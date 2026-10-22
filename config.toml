@@ -1,0 +1,14 @@
+# Tema claro fijo (aunque el dispositivo del alumno esté en modo oscuro).
+# Ubicación: carpeta .streamlit/ junto a app.py  →  .streamlit/config.toml
+[theme]
+base = "light"
+primaryColor = "#2F7BD9"            # azul del aro del logo
+backgroundColor = "#F3F6FB"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1E2A47"               # azul marino del logo
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
