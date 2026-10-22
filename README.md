@@ -159,10 +159,11 @@ El MVP se valida mediante 6 casos de prueba estandarizados (detallados en el PRD
 
 Proyecto desarrollado para la cátedra **EDI II - Ciencias de Datos** del **Instituto de Educación Superior N° 11** (San Salvador de Jujuy):
 
-* **Gonzalo Arratia** — [@gonzarratia](https://github.com/gonzarratia)
-* *[Nombre y Apellido Integrante 2]*
-* *[Nombre y Apellido Integrante 3]*
-* *[Nombre y Apellido Integrante 4]*
+* **Gonzalo Arratia** 
+* **Marcos Mamani**
+* **Adrián Mamani**
+* **Fernanda Luquet**
+* **Justina Ramos**
 
 ---
 *Instituto de Educación Superior N° 11 · Alvear 1145, San Salvador de Jujuy, Jujuy, Argentina.*
