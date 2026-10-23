@@ -147,7 +147,8 @@ CONFIG_DEFECTO: Dict[str, str] = {
         "- **0** o *menu*: volver al inicio · **#** o *volver*: un nivel atrás."
     ),
     "aviso_ia": ("Si escribís una consulta con tus palabras, puede procesarse con IA (Google Gemini). "
-                 "No escribas DNI, teléfono ni otros datos personales."),
+                 "No escribas DNI, teléfono ni otros datos personales."
+                 "Si usás el micrófono, el audio se envía a Google para transcribirlo y no se guarda"),
     "mensaje_despedida": "¡De nada! 😊 Si necesitás algo más, tocá una opción o escribí **menu**.",
     "preguntas_frecuentes": ("¿Cómo me inscribo?|¿Cuándo son las mesas de examen?|¿Qué becas hay?|"
                              "¿Cómo pido un certificado?|¿Dónde queda el instituto?"),

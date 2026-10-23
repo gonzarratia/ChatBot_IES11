@@ -4,6 +4,7 @@ from __future__ import annotations
 import streamlit.components.v1 as components
 import base64
 import html
+import inspect
 import io
 import json
 import logging
@@ -30,12 +31,50 @@ from .estilos import ESTILOS
 from .gemini import obtener_cliente_llm, obtener_control_llm
 from .ia import (
     construir_prompt_sistema, generar_stream, historial_para_llm, ocultar_marcador,
-    separar_fuentes,
+    separar_fuentes, transcribir_audio, AudioDemasiadoLargo, LLMNoDisponible,
 )
 
 logger = logging.getLogger(__name__)
 
 MODO_DEBUG = (leer_ajuste("debug", "0") or "0").strip().lower() in {"1", "true", "si", "yes"}
+
+# El micrófono viene integrado en st.chat_input(accept_audio=True) desde Streamlit 1.52.
+CHAT_ACEPTA_AUDIO = "accept_audio" in inspect.signature(st.chat_input).parameters
+
+
+def _leer_entrada(entrada: Any) -> Tuple[Optional[str], Any]:
+    """
+    st.chat_input devuelve None, un str (sin audio) o un ChatInputValue con .text y .audio
+    (con accept_audio=True). Devuelve (texto escrito, archivo de audio) — cualquiera puede ser None.
+    """
+    if entrada is None:
+        return None, None
+    if isinstance(entrada, str):
+        return (entrada.strip() or None), None
+    texto = str(entrada.get("text") or "").strip()
+    return (texto or None), entrada.get("audio")
+
+
+def _transcribir_entrada(audio: Any) -> Optional[str]:
+    """Audio grabado → texto, o None (con un aviso amable) si no se pudo. Nunca lanza."""
+    try:
+        cliente = obtener_cliente_llm()
+        if cliente is None:
+            raise LLMNoDisponible("sin cliente")
+        texto = transcribir_audio(
+            audio.getvalue(), cliente, modelos_llm(), obtener_control_llm(), mime=getattr(audio, "type", None) or "audio/wav",
+        )
+        if not texto:
+            st.toast("No te escuché bien. Probá de nuevo o escribí tu consulta.", icon="🎙️")
+        return texto or None
+    except AudioDemasiadoLargo:
+        st.toast("El audio es muy largo. Probá con un mensaje de hasta 1 minuto.", icon="⏱️")
+    except LLMNoDisponible:
+        st.toast("Ahora no puedo procesar audios. Escribí tu consulta o probá en un minuto.", icon="🎙️")
+    except Exception:
+        logger.exception("Fallo al transcribir el audio")
+        st.toast("No pude procesar el audio. Escribí tu consulta.", icon="🎙️")
+    return None
 
 # 📌 NUEVO: CSS para achicar los botones de Like/Dislike estilo Gemini
 ESTILO_FEEDBACK = """
@@ -329,50 +368,7 @@ def _dibujar_preguntas_frecuentes(preguntas: List[str]) -> None:
         for i, pregunta in enumerate(preguntas):
             st.button(pregunta, key=f"faq_{i}", on_click=_encolar, args=(pregunta, pregunta, None), use_container_width=True)
             
-'''def _dibujar_opciones(
-    arbol: Arbol, nodo_actual: str, sugerencias: List[Tuple[str, str]],
-    fuentes: Optional[List[Tuple[str, str]]] = None, hay_contacto: bool = False,
-    preguntas: Optional[List[str]] = None,
-) -> None:
-    fuentes = fuentes or []
-    st.markdown('<div id="ies-opciones"></div>', unsafe_allow_html=True)
-    if fuentes:
-        st.markdown('<div class="guia">Para ver el detalle oficial:</div>', unsafe_allow_html=True)
-        _grilla_tarjetas([(f"fte_{i}", "📄", "", t, (t, t, i)) for i, t in fuentes], por_fila=1)
-    elif sugerencias:
-        st.markdown('<div class="guia">Tocá la opción que estabas buscando.</div>', unsafe_allow_html=True)
-        _grilla_tarjetas([(f"sug_{i}", "💡", "", t, (t, t, i)) for i, t in sugerencias], por_fila=1)
-    else:
-        if nodo_actual == ID_RAIZ:
-            st.markdown('<div class="guia">Tocá una opción o escribí tu consulta.</div>', unsafe_allow_html=True)
-        else:
-            _dibujar_migas(nodo_actual, arbol)
-        opciones = arbol.hijos.get(nodo_actual, [])
-        largo = len(opciones) > OPCIONES_VISIBLES
-        desplegado = nodo_actual in st.session_state.get("ver_todas", set())
-        visibles = opciones if (desplegado or not largo) else opciones[:OPCIONES_VISIBLES]
-        _grilla_tarjetas([
-            (f"op_{i}_{h['id']}", icono_nodo(h), h["opcion"], h["titulo"],
-             (h["opcion"], f"{h['opcion']}. {h['titulo']}", None))
-            for i, h in enumerate(visibles)
-        ])
-        if largo:
-            etiqueta = ("▲  Ver menos" if desplegado else f"▼  Ver las {len(opciones) - OPCIONES_VISIBLES} opciones restantes")
-            st.button(etiqueta, key=f"vermas_{nodo_actual}", on_click=_alternar_ver_todas, args=(nodo_actual,), use_container_width=True)
-        if nodo_actual == ID_RAIZ:
-            _dibujar_preguntas_frecuentes(preguntas or [])
 
-    navegacion: List[Tuple[str, str, tuple]] = []
-    if nodo_actual != ID_RAIZ:
-        navegacion.append(("nav_volver", "← Volver", ("#", "Volver")))
-    if nodo_actual != ID_RAIZ or sugerencias or fuentes:
-        navegacion.append(("nav_menu", "🏠 Menú principal", ("0", "Menú principal")))
-    if navegacion:
-        pesos = {"nav_volver": 1.1, "nav_menu": 1.8}
-        anchos = [pesos[clave] for clave, _e, _a in navegacion]
-        columnas = st.columns(anchos + [max(0.5, 6 - sum(anchos))])
-        for columna, (clave, etiqueta, args) in zip(columnas, navegacion):
-            columna.button(etiqueta, key=clave, type="primary", on_click=_encolar, args=args, use_container_width=True)'''
 def _dibujar_opciones_en_burbuja(
     arbol: Arbol, nodo_actual: str, preguntas: Optional[List[str]] = None
 ) -> None:
@@ -449,55 +445,7 @@ def _dibujar_pie_externo(
         for columna, (clave, etiqueta, args) in zip(columnas, navegacion):
             columna.button(etiqueta, key=clave, type="primary", on_click=_encolar, args=args, use_container_width=True)
 
-'''def _dibujar_historial(animar_ultimo: bool, nuevos: int = 0) -> None:
-    mensajes = st.session_state.mensajes
-    for i, msg in enumerate(mensajes):
-        es_nuevo = nuevos > 0 and i >= len(mensajes) - nuevos
-        
-        if msg["role"] == "divider":
-            st.markdown(f'<div class="divisor-nav">{html.escape(msg["content"])}</div>', unsafe_allow_html=True)
-            continue
-            
-        if msg["role"] == "user":
-            st.markdown(_html_burbuja_usuario(msg["content"], es_nuevo), unsafe_allow_html=True)
-            continue
-            
-        with st.chat_message("assistant", avatar=_avatar_bot()):
-            if es_nuevo:
-                st.markdown('<span class="marca-nuevo"></span>', unsafe_allow_html=True)
-            if animar_ultimo and i == len(mensajes) - 1:
-                st.write_stream(_escribiendo(msg["content"]))
-            else:
-                st.markdown(msg["content"])
-            acciones = _html_acciones(msg.get("links", []))
-            if acciones:
-                st.markdown(acciones, unsafe_allow_html=True)
-            if msg.get("ia"):
-                st.caption(AVISO_RESPUESTA_IA)
-                
-            # 📌 LÓGICA DE FEEDBACK SEGURA (Quitar un nivel de sangría)
-            key_feedback = f"feedback_{i}_{st.session_state.id_sesion}"
-                
-                # Definir una función de callback que se ejecutará cuando el usuario haga clic
-            def on_feedback_change(index=i, k=key_feedback):
-                valoracion = st.session_state[k]
-                if valoracion is not None and not st.session_state.mensajes[index].get("feedback_enviado"):
-                    tipo_feedback = "LIKE" if valoracion == 1 else "DISLIKE"
-                    texto_respuesta = st.session_state.mensajes[index]["content"].replace("\n", " ")[:200]
-                    
-                    from .datos import actualizar_feedback_en_background
-                    actualizar_feedback_en_background(
-                        leer_ajuste("sheet_id"), 
-                        st.session_state.id_sesion, 
-                        texto_respuesta, 
-                        tipo_feedback
-                    )
-                    st.session_state.mensajes[index]["feedback_enviado"] = True
-                    st.toast("¡Gracias por tu opinión! Nos ayuda a mejorar el bot.")
 
-                # Renderizar el componente st.feedback vinculándolo a la función callback
-                st.feedback("thumbs", key=key_feedback, on_change=on_feedback_change)
-'''
 def _dibujar_historial(
     animar_ultimo: bool, nuevos: int = 0, arbol: Optional[Arbol] = None,
     preguntas: Optional[List[str]] = None, mostrar_menu_interno: bool = False
@@ -685,6 +633,7 @@ def main() -> None:
             box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
             transition: all 0.18s ease !important;
         }
+        
         div[class*="st-key-tarjeta_"]:hover .tarjeta {
             background: #f8fafc !important;
             border-color: #cbd5e1 !important;
@@ -752,6 +701,26 @@ def main() -> None:
             border-color: #93c5fd !important;
             color: #1d4ed8 !important;
         }
+        /* Estilo para unificar el formulario de entrada inferior */
+        div[data-testid="stForm"] {
+            border: none !important;
+            background: transparent !important;
+            padding: 0 !important;
+            box-shadow: none !important;
+            position: fixed !important;
+            bottom: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            background: rgba(255, 255, 255, 0.95) !important;
+            backdrop-filter: blur(10px);
+            padding: 12px 20px !important;
+            z-index: 999;
+            border-top: 1px solid #e2e8f0 !important;
+        }
+        /* Ocultar el botón de envío genérico del formulario si queremos que actúe al presionar Enter */
+        div[data-testid="stFormSubmitButton"] button {
+            display: none !important;
+        }
         </style>
     """, unsafe_allow_html=True)
     
@@ -796,12 +765,22 @@ def main() -> None:
             {"role": "assistant", "content": config["mensaje_bienvenida"], "links": [], "ia": False}
         ]
 
-    # 📌 TEXTO FIJO: Evita el bug de Streamlit de "tragar" el primer Enter
-    escrito = st.chat_input("Escribí tu consulta o el número de una opción…", max_chars=200)
+    # Una única caja de texto, fija abajo. Con IA disponible suma el botón de micrófono integrado.
+    # (No ponerla dentro de st.columns/containers: ahí deja de quedar fija y se dibuja en el medio.)
+    voz = {"accept_audio": True} if (llm_ok and CHAT_ACEPTA_AUDIO) else {}
+    entrada = st.chat_input("Escribí tu consulta o el número de una opción…", max_chars=200, key="chat_principal", **voz)
+    escrito, audio = _leer_entrada(entrada)
+
+    texto_ingresado, por_voz = escrito, False
+    if not texto_ingresado and audio is not None:
+        with st.spinner("Escuchando tu consulta…"):
+            texto_ingresado = _transcribir_entrada(audio)
+        por_voz = bool(texto_ingresado)
 
     pendiente = st.session_state.pop("pendiente", None)
-    if escrito:
-        pendiente = {"texto": escrito, "mostrar": escrito, "ir_a": None}
+    if texto_ingresado:
+        # Con voz se muestra lo que se entendió (🎙️), así el alumno puede corregir si hizo falta.
+        pendiente = {"texto": texto_ingresado, "mostrar": ("🎙️ " if por_voz else "") + texto_ingresado, "ir_a": None}
     hubo_entrada = bool(pendiente)
 
     tarea_ia = None
@@ -839,17 +818,6 @@ def main() -> None:
                 ]
                 guardar_log_en_background(id_sheet, fila_log)
 
-        '''# Cuando toca Volver o Menú principal, mostramos el divisor y abrimos la burbuja con sus opciones adentro
-        if es_nav:
-            etiqueta = "— Menú principal —" if t_norm in COMANDOS_MENU else "— Volver —"
-            st.session_state.mensajes.append({"role": "divider", "content": etiqueta})
-            _guardar_respuesta(resp, animar=False, omitir_mensaje=False)
-        else:
-            st.session_state.mensajes.append({"role": "user", "content": pendiente["mostrar"]})
-            if resp.usar_llm:
-                tarea_ia = (resp, historial)
-            else:
-                _guardar_respuesta(resp)'''
                 
         # 📌 NUEVO: Detectamos si el alumno llegó a una respuesta final (nodo hoja sin hijos)
         id_destino = pendiente.get("ir_a")

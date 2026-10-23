@@ -1,5 +1,5 @@
 # Interfaz web y componentes de chat (st.chat_message / st.chat_input requieren >= 1.24)
-streamlit>=1.42.0,<2.0
+streamlit>=1.52,<2.0
  
 # Cliente de Google Sheets (cuenta de servicio)
 gspread>=6.0,<7.0
