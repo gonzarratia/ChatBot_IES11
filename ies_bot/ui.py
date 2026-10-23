@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 from .datos import cargar_datos, guardar_log_en_background
+from .privacidad import anonimizar_consulta
 
 import streamlit as st
 
@@ -31,7 +32,7 @@ from .estilos import ESTILOS
 from .gemini import obtener_cliente_llm, obtener_control_llm
 from .ia import (
     construir_prompt_sistema, generar_stream, historial_para_llm, ocultar_marcador,
-    separar_fuentes, transcribir_audio, AudioDemasiadoLargo, LLMNoDisponible,
+    separar_fuentes, transcribir_audio, AudioDemasiadoLargo, LLMNoDisponible, enlaces_relevantes, catalogos_de_enlaces, limpiar_citas,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,11 +66,14 @@ def _transcribir_entrada(audio: Any) -> Optional[str]:
             audio.getvalue(), cliente, modelos_llm(), obtener_control_llm(), mime=getattr(audio, "type", None) or "audio/wav",
         )
         if not texto:
+            logger.info("Audio sin voz/ininteligible (no se registra en logs_bot)")
             st.toast("No te escuché bien. Probá de nuevo o escribí tu consulta.", icon="🎙️")
         return texto or None
     except AudioDemasiadoLargo:
+        logger.info("Audio demasiado largo (no se registra en logs_bot)")
         st.toast("El audio es muy largo. Probá con un mensaje de hasta 1 minuto.", icon="⏱️")
     except LLMNoDisponible:
+        logger.info("Transcripción no disponible: cuota/conexión (no se registra en logs_bot)")
         st.toast("Ahora no puedo procesar audios. Escribí tu consulta o probá en un minuto.", icon="🎙️")
     except Exception:
         logger.exception("Fallo al transcribir el audio")
@@ -515,7 +519,7 @@ def _guardar_respuesta(resp: Respuesta, ia: bool = False, fuentes: Optional[List
 
 
 def _atender_con_ia(resp: Respuesta, historial: List[Dict[str, Any]], arbol: Arbol,
-                    config: Dict[str, str], max_sesion: int, sheet_id: str) -> None:
+                    config: Dict[str, str], max_sesion: int, sheet_id: str, origen: str = "TEXTO") -> None:
     control = obtener_control_llm()
     aviso = ""
     if st.session_state.get("consultas_llm", 0) >= max_sesion:
@@ -536,21 +540,26 @@ def _atender_con_ia(resp: Respuesta, historial: List[Dict[str, Any]], arbol: Arb
                 for trozo in generar_stream(sistema, resp.consulta_llm, historial,
                                             obtener_cliente_llm(), modelos_llm(), control):
                     crudo += trozo
-                    hueco.markdown(ocultar_marcador(crudo) + " ▌")
+                    hueco.markdown(limpiar_citas(ocultar_marcador(crudo))[0] + " ▌")
             except Exception as exc:
                 error = exc
             texto, ids = separar_fuentes(crudo)
+            texto, ids_en_texto = limpiar_citas(texto)     # Quita los "[id:5.10]" sueltos del texto
+            ids += [i for i in ids_en_texto if i not in ids]
 
         if texto.strip():
             if error is not None:
                 texto += "\n\n_(La respuesta se cortó. Si necesitás más detalle, consultá en secretaría o usá el menú.)_"
             fuentes = [(i, arbol.por_id[i]["titulo"]) for i in ids if i in arbol.por_id][:3]
-            links: List[Tuple[str, str]] = []
-            for i, _titulo in fuentes:
-                links += [l for l in arbol.por_id[i]["links"] if l not in links]
+            # Solo los archivos que tienen que ver con lo consultado. Los catálogos (p. ej. las cartillas
+            # de ingreso) aportan solo las carreras nombradas, aunque la IA no haya citado esa fila.
+            links = enlaces_relevantes(
+                [(arbol.por_id[i]["titulo"], arbol.por_id[i]["links"]) for i, _titulo in fuentes],
+                f"{resp.consulta_llm} {texto}", catalogos_de_enlaces(arbol),
+            )
             hueco.markdown(texto)
             if links:
-                st.markdown(_html_acciones(links[:4]), unsafe_allow_html=True)
+                st.markdown(_html_acciones(links[:6]), unsafe_allow_html=True)
             # 👇 AGREGAR ESTO ACÁ PARA LA RESPUESTA EN VIVO
             indice = len(st.session_state.mensajes) # Índice que tendrá este mensaje
             key_feedback = f"feedback_{indice}_{st.session_state.id_sesion}"
@@ -585,12 +594,13 @@ def _atender_con_ia(resp: Respuesta, historial: List[Dict[str, Any]], arbol: Arb
                     "SI",
                     "SI" if fallo_ia else "NO", 
                     texto_limpio[:200],
-                    ""
+                    "",
+                    origen,        # Columna I del Sheets: encabezado "origen"
                 ]
                 guardar_log_en_background(sheet_id, fila_log)
 
             st.session_state.consultas_llm = st.session_state.get("consultas_llm", 0) + 1
-            _guardar_respuesta(replace(resp, texto=texto, links=links[:4], sugerencias=[], fallo=False,
+            _guardar_respuesta(replace(resp, texto=texto, links=links[:6], sugerencias=[], fallo=False,
                                        usar_llm=False), ia=True, fuentes=fuentes, animar=False)
         else:
             respaldo = resp.texto + (f"\n\n{aviso}" if aviso else "")
@@ -780,7 +790,8 @@ def main() -> None:
     pendiente = st.session_state.pop("pendiente", None)
     if texto_ingresado:
         # Con voz se muestra lo que se entendió (🎙️), así el alumno puede corregir si hizo falta.
-        pendiente = {"texto": texto_ingresado, "mostrar": ("🎙️ " if por_voz else "") + texto_ingresado, "ir_a": None}
+        pendiente = {"texto": texto_ingresado, "mostrar": ("🎙️ " if por_voz else "") + texto_ingresado, "ir_a": None,
+                     "origen": "VOZ" if por_voz else "TEXTO"}
     hubo_entrada = bool(pendiente)
 
     tarea_ia = None
@@ -806,15 +817,20 @@ def main() -> None:
                 # Detectamos si es un fallo léxico (porque dice "no encontré" o tira sugerencias)
                 fallo_lexico = resp.fallo or ("no encontré" in texto_respuesta.lower()) or (len(resp.sugerencias) > 0)
                 
+                origen = pendiente.get("origen", "BOTON")     # TEXTO | VOZ | BOTON
+                consulta_log = pendiente["texto"]
+                if origen == "VOZ":
+                    consulta_log = anonimizar_consulta(consulta_log, 200) or "(consulta de voz)"
                 fila_log = [
                     ahora_local().strftime("%Y-%m-%d %H:%M:%S"),
                     st.session_state.id_sesion,
-                    pendiente["texto"],
+                    consulta_log,
                     resp.nodo,
                     "NO",
                     "SI" if fallo_lexico else "NO",  # <-- Ahora SÍ va a marcar el error
                     texto_respuesta[:200],
-                    ""
+                    "",
+                    origen,        # Columna I del Sheets: encabezado "origen"
                 ]
                 guardar_log_en_background(id_sheet, fila_log)
 
@@ -851,7 +867,7 @@ def main() -> None:
         else:
             st.session_state.mensajes.append({"role": "user", "content": pendiente["mostrar"]})
             if resp.usar_llm:
-                tarea_ia = (resp, historial)
+                tarea_ia = (resp, historial, pendiente.get("origen", "BOTON"))
             else:
                 _guardar_respuesta(resp)
 
@@ -873,7 +889,7 @@ def main() -> None:
     st.session_state.animar = False
     
     if tarea_ia:
-        _atender_con_ia(tarea_ia[0], tarea_ia[1], arbol, config, max_sesion, sheet_id)
+        _atender_con_ia(tarea_ia[0], tarea_ia[1], arbol, config, max_sesion, sheet_id, tarea_ia[2])
         nodo_actual = st.session_state.nodo_actual
         
     # Afuera de la burbuja solo quedan las citas de IA ("Para ver el detalle oficial"), sugerencias y los botones Volver/Inicio

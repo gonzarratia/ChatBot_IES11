@@ -7,10 +7,12 @@ El cliente de Gemini se crea en `gemini.py` y se pasa por parámetro. Tests: `te
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
-from collections import deque
+import unicodedata
+from collections import Counter, deque
 from datetime import date
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -111,6 +113,117 @@ def separar_fuentes(texto: str) -> Tuple[str, List[str]]:
             if pieza and pieza.lower() != "ninguna" and pieza not in ids:
                 ids.append(pieza)
     return _RE_FUENTES.sub("", texto).rstrip(), ids
+
+
+# --- Botones de descarga que acompañan una respuesta de IA -----------------------------------------
+_VACIAS_LINK = {"de", "del", "la", "las", "el", "los", "en", "para", "con", "por", "una", "uno", "que", "y", "e", "o"}
+
+
+def _palabras(texto: str) -> List[str]:
+    sin_tildes = "".join(c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c))
+    return [w for w in re.findall(r"[a-z0-9]+", sin_tildes.lower()) if len(w) > 2 and w not in _VACIAS_LINK]
+
+
+def _misma_palabra(a: str, b: str) -> bool:
+    """Igual, una prefijo de la otra (plural/género: 'carrera'≈'carreras') o misma raíz larga."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) >= 5 and (a.startswith(b) or b.startswith(a)):
+        return True
+    return min(len(a), len(b)) >= 7 and len(os.path.commonprefix([a, b])) >= 6
+
+
+Enlace = Tuple[str, str]                 # (texto del botón, url)
+LINKS_DOCUMENTO_PUNTUAL = 5              # Hasta 5 links en una fila = documentos sueltos; más = catálogo
+
+
+def _elegir_de_catalogo(grupo: List[Enlace], contexto: List[str]) -> List[Enlace]:
+    """
+    De un catálogo (una fila con muchos links, p. ej. una cartilla por carrera) deja solo los links cuyo
+    NOMBRE aparece en el contexto (`contexto` = palabras de la pregunta + la respuesta, en orden):
+    · nombre de una sola palabra distintiva ("Hotelería"): la palabra tiene que aparecer;
+    · nombre de varias ("Ciencias de Datos e IA"): dos palabras CONSECUTIVAS del nombre tienen que aparecer
+      seguidas. Así "ciencias de la salud" + "datos del sistema" no activa la cartilla de Ciencias de Datos.
+    Las palabras repetidas en más de la mitad de los links ('cartilla', 'tecnicatura') no distinguen y se
+    ignoran. Se devuelven en el orden en que la respuesta las menciona.
+    """
+    por_link = [_palabras(texto) for texto, _url in grupo]
+    frecuencia = Counter(w for ws in por_link for w in set(ws))
+    elegidos: List[Tuple[int, Enlace]] = []
+    for (texto, url), ws in zip(grupo, por_link):
+        nombre = [w for w in ws if frecuencia[w] / len(grupo) <= 0.5]
+        if not nombre:
+            continue
+        if len(nombre) == 1:
+            posiciones = [i for i, c in enumerate(contexto) if _misma_palabra(nombre[0], c)]
+        else:
+            posiciones = [
+                i for i in range(len(contexto) - 1) for k in range(len(nombre) - 1)
+                if _misma_palabra(nombre[k], contexto[i]) and _misma_palabra(nombre[k + 1], contexto[i + 1])
+            ]
+        if posiciones:
+            elegidos.append((min(posiciones), (texto, url)))
+    return [enlace for _pos, enlace in sorted(elegidos, key=lambda e: e[0])]
+
+
+def catalogos_de_enlaces(arbol: Arbol) -> List[Tuple[str, List[Enlace]]]:
+    """Todas las filas de la planilla que son catálogos de archivos: [(título de la fila, sus links)]."""
+    return [(n["titulo"], n["links"]) for n in arbol.por_id.values() if len(n["links"]) > LINKS_DOCUMENTO_PUNTUAL]
+
+
+def enlaces_relevantes(
+    fuentes: List[Tuple[str, List[Enlace]]], contexto: str,
+    catalogos: Optional[List[Tuple[str, List[Enlace]]]] = None, maximo: int = 6,
+) -> List[Enlace]:
+    """
+    Botones de descarga para una respuesta de IA. `fuentes` = (título, links) de cada fila citada por la
+    IA; `contexto` = la pregunta del alumno + la respuesta generada; `catalogos` = ver catalogos_de_enlaces().
+    · Una fila citada con pocos links son documentos puntuales: se muestran todos.
+    · Los CATÁLOGOS (citados o no) aportan solo los archivos que nombran algo mencionado en la pregunta o
+      en la respuesta, rotulados con el título del catálogo ("Cartillas de Ingreso 2026: Hotelería").
+      Así aparece la cartilla de una carrera aunque la IA no haya citado esa fila, y no aparecen las de
+      carreras que no tienen nada que ver.
+    """
+    palabras_contexto = _palabras(contexto)
+    puntuales: List[Enlace] = []
+    de_catalogo: List[Enlace] = []
+    vistos = set()
+
+    def sumar(destino: List[Enlace], titulo: str, links: List[Enlace], rotular: bool) -> None:
+        for texto, url in links:
+            if url not in vistos:
+                vistos.add(url)
+                destino.append((f"{titulo}: {texto}" if rotular and titulo else texto, url))
+
+    for titulo, grupo in fuentes:
+        if len(grupo) <= LINKS_DOCUMENTO_PUNTUAL:
+            sumar(puntuales, titulo, grupo, False)
+        else:
+            sumar(de_catalogo, titulo, _elegir_de_catalogo(grupo, palabras_contexto), True)
+    for titulo, grupo in catalogos or []:
+        sumar(de_catalogo, titulo, _elegir_de_catalogo(grupo, palabras_contexto), True)
+    return (puntuales + de_catalogo)[:maximo]
+
+
+_RE_CITA_EN_LINEA = re.compile(
+    r"\s*\[\s*(?:ids?\s*:\s*[\w.\-]+(?:\s*[,;]\s*(?:ids?\s*:\s*)?[\w.\-]+)*"
+    r"|\d+(?:\.\d+)*(?:\s*[,;]\s*\d+(?:\.\d+)*)*)\s*\]", re.IGNORECASE)
+_RE_CITA_INCOMPLETA = re.compile(r"\s*\[\s*(?:ids?\s*:?[^\]]*|\d[\d.,;\s]*)?$", re.IGNORECASE)
+
+
+def limpiar_citas(texto: str) -> Tuple[str, List[str]]:
+    """
+    Quita del texto las citas que el modelo deja sueltas ("[id:5.10]", "[5.4]", "[3.6, 5]", y una cita a medio
+    escribir al final mientras se genera) y devuelve también los ids citados, que siguen siendo fuentes válidas.
+    """
+    ids: List[str] = []
+    for m in _RE_CITA_EN_LINEA.finditer(texto):
+        for pieza in re.split(r"[,;\s]+", re.sub(r"[\[\]]", "", m.group(0)).strip()):
+            pieza = re.sub(r"^ids?:", "", pieza, flags=re.IGNORECASE).strip(" .")
+            if pieza and pieza.lower() not in ("id", "ids") and pieza not in ids:
+                ids.append(pieza)
+    limpio = _RE_CITA_EN_LINEA.sub("", texto)
+    return _RE_CITA_INCOMPLETA.sub("", limpio), ids
 
 
 def ocultar_marcador(texto: str) -> str:
